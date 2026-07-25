@@ -23,7 +23,7 @@ def valid_production_env() -> dict[str, str]:
         "INTERNAL_API_HEADER": "x-internal-secret",
         "INTERNAL_API_SECRET": token_hex(32),
         "REDIS_AUTH_MODE": "acl_url",
-        "REDIS_URL": "rediss://ml-runtime:strong-test-password@redis.internal:6379/0",
+        "REDIS_URL": "redis://ml-runtime:strong-test-password@redis.internal:6379/0",
         "FEEDBACK_ALLOW_MEMORY_FALLBACK": "false",
         "FEEDBACK_STREAM_NAME": "ml:feedback:v2",
         "FEEDBACK_STREAM_MAXLEN": "100000",
@@ -122,6 +122,15 @@ def issue_names(environment: dict[str, str]) -> set[str]:
 
 def test_valid_production_environment_passes() -> None:
     assert validate_production_config(valid_production_env()) == []
+
+
+def test_valid_tls_redis_production_environment_passes() -> None:
+    environment = valid_production_env()
+    environment["REDIS_URL"] = (
+        "rediss://ml-runtime:strong-test-password@redis.internal:6379/0"
+    )
+
+    assert validate_production_config(environment) == []
 
 
 def test_distributed_production_template_requires_secret_replacement() -> None:
@@ -230,9 +239,12 @@ def test_production_rejects_non_v2_repository_collection() -> None:
     assert "QDRANT_COLLECTION_NAME" in issue_names(environment)
 
 
-def test_redis_requires_authenticated_tls_and_image_identity_cannot_be_overridden() -> None:
+def test_redis_requires_acl_authentication_and_image_identity_cannot_be_overridden() -> None:
     environment = valid_production_env()
-    environment.update(REDIS_AUTH_MODE="none", REDIS_URL="redis://redis.internal:6379/0")
+    environment.update(
+        REDIS_AUTH_MODE="none",
+        REDIS_URL="redis://redis.internal:6379/0",
+    )
     names = issue_names(environment)
     assert {"REDIS_AUTH_MODE", "REDIS_URL"} <= names
 

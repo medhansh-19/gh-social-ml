@@ -155,6 +155,11 @@ and keeps the completed file root-owned at `/etc/gh-social/ml.env` with mode
 `600`. It must contain no database, GitHub, or LLM-provider credentials. Run the
 network-free preflight before a manual restart:
 
+Production Redis configuration is transport-aware: use an ACL-authenticated
+`redis://` URL for a private, network-isolated endpoint, or the equivalent
+`rediss://` URL when the endpoint provides TLS. The URL scheme selects the
+transport; both modes require the dedicated ACL username and password.
+
 ```bash
 sudo docker run --rm --network none --no-healthcheck --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \

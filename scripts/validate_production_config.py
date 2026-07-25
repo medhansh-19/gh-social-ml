@@ -205,7 +205,7 @@ def _csv(value: str | None) -> list[str]:
 
 
 def _validate_feedback(v: _Validator) -> None:
-    redis_url = v.url("REDIS_URL", schemes={"rediss"})
+    redis_url = v.url("REDIS_URL", schemes={"redis", "rediss"})
     auth_mode = v.raw("REDIS_AUTH_MODE", required=True)
     if auth_mode is not None and auth_mode != "acl_url":
         v.issue("REDIS_AUTH_MODE", "must be exactly 'acl_url' in production")
@@ -218,7 +218,7 @@ def _validate_feedback(v: _Validator) -> None:
         ):
             v.issue("REDIS_URL", "must contain a non-placeholder ACL password of at least 16 bytes")
         if parsed_redis.query:
-            v.issue("REDIS_URL", "must not contain TLS verification query overrides")
+            v.issue("REDIS_URL", "must not contain query options in production")
     allow_memory = v.boolean("FEEDBACK_ALLOW_MEMORY_FALLBACK")
     if allow_memory:
         v.issue(

@@ -244,6 +244,24 @@ class ProducerRedis:
         raise AssertionError("unexpected Lua script")
 
 
+@pytest.mark.parametrize("scheme", ["redis", "rediss"])
+def test_settings_accept_authenticated_redis_transports_in_production(
+    monkeypatch,
+    scheme,
+):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("REDIS_AUTH_MODE", "acl_url")
+    monkeypatch.setenv(
+        "REDIS_URL",
+        f"{scheme}://ml-runtime:strong-test-password@redis.internal:6379/0",
+    )
+
+    settings = V2FeedbackSettings.from_env()
+
+    assert settings.redis_url is not None
+    assert settings.redis_url.startswith(f"{scheme}://")
+
+
 def test_settings_reject_unsafe_production_and_lock_configuration(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.delenv("REDIS_URL", raising=False)

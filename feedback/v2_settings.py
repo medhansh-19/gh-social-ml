@@ -208,8 +208,8 @@ class V2FeedbackSettings:
                 raise ValueError("REDIS_AUTH_MODE must be acl_url in production")
             assert redis_url is not None
             parsed_redis = urlsplit(redis_url)
-            if parsed_redis.scheme.casefold() != "rediss":
-                raise ValueError("REDIS_URL must use rediss in production")
+            if parsed_redis.scheme.casefold() not in {"redis", "rediss"}:
+                raise ValueError("REDIS_URL must use redis or rediss in production")
             if not parsed_redis.username or not parsed_redis.password:
                 raise ValueError(
                     "REDIS_URL must include Redis ACL username and password in production"
@@ -218,7 +218,7 @@ class V2FeedbackSettings:
                 raise ValueError("REDIS_URL password must contain at least 16 characters")
             if parsed_redis.query:
                 raise ValueError(
-                    "REDIS_URL must not override TLS verification through query options"
+                    "REDIS_URL must not include query options in production"
                 )
         stream_name = _name(
             "FEEDBACK_STREAM_NAME", "V2_FEEDBACK_STREAM_NAME", default="ml:feedback:v2"

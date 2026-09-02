@@ -79,6 +79,9 @@ def test_repository_job_accepts_canonical_node_v2_outbox_payload():
                 "url": "https://github.com/datawhalechina/llm-universe",
                 "description": None,
                 "readme": "Repository documentation",
+                "readme_source_path": "docs/README.md",
+                "readme_default_branch": "main",
+                "readme_base_url": "https://raw.githubusercontent.com/datawhalechina/llm-universe/refs/heads/main/docs/",
                 "primary_language": None,
                 "languages": ["Jupyter Notebook", "Python"],
                 "topics": ["langchain", "rag"],
@@ -101,7 +104,74 @@ def test_repository_job_accepts_canonical_node_v2_outbox_payload():
     assert payload["description"] == ""
     assert payload["primary_language"] == "Unknown"
     assert payload["readme_length"] == len("Repository documentation")
+    assert payload["readme"] == "Repository documentation"
     assert payload["extracted_paragraphs"] == ["Repository documentation"]
+    assert payload["readme_source_path"] == "docs/README.md"
+    assert payload["readme_default_branch"] == "main"
+    assert payload["readme_base_url"].endswith("/docs/")
+
+
+def test_repository_job_accepts_readme_metadata_at_exact_backend_boundaries():
+    repo_id = uuid.uuid4()
+    source_path = "a" * (1_024 - len("/README.md")) + "/README.md"
+    branch = "b" * 256
+    raw_prefix = "https://raw.githubusercontent.com/"
+    base_url = raw_prefix + "c" * (2_048 - len(raw_prefix) - 1) + "/"
+
+    job = RepositoryJob.model_validate(
+        {
+            "schema_version": 2,
+            "job_id": str(uuid.uuid4()),
+            "repo_id": str(repo_id),
+            "content_version": 1,
+            "repository": {
+                "repo_id": str(repo_id),
+                "full_name": "owner/repository",
+                "content_hash": "boundary-test",
+                "readme_source_path": source_path,
+                "readme_default_branch": branch,
+                "readme_base_url": base_url,
+            },
+        }
+    )
+
+    assert len(job.repository.readme_source_path or "") == 1_024
+    assert len(job.repository.readme_default_branch or "") == 256
+    assert len(job.repository.readme_base_url or "") == 2_048
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("readme_source_path", "a" * (1_025 - len("/README.md")) + "/README.md"),
+        ("readme_default_branch", "b" * 257),
+        (
+            "readme_base_url",
+            "https://raw.githubusercontent.com/"
+            + "c" * (2_049 - len("https://raw.githubusercontent.com/") - 1)
+            + "/",
+        ),
+    ],
+)
+def test_repository_job_rejects_readme_metadata_over_backend_boundaries(
+    field: str, value: str
+):
+    repo_id = uuid.uuid4()
+    with pytest.raises(ValidationError):
+        RepositoryJob.model_validate(
+            {
+                "schema_version": 2,
+                "job_id": str(uuid.uuid4()),
+                "repo_id": str(repo_id),
+                "content_version": 1,
+                "repository": {
+                    "repo_id": str(repo_id),
+                    "full_name": "owner/repository",
+                    "content_hash": "boundary-test",
+                    field: value,
+                },
+            }
+        )
 
 
 def test_repository_job_rejects_mismatched_nested_repo_id():
@@ -114,6 +184,54 @@ def test_repository_job_rejects_mismatched_nested_repo_id():
                 "content_version": 1,
                 "repository": {
                     "repo_id": str(uuid.uuid4()),
+                    "full_name": "owner/repository",
+                    "content_hash": "mismatched-repo-test",
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"readme_source_path": "../README.md"},
+        {"readme_source_path": "/README.md"},
+        {"readme_base_url": "http://raw.githubusercontent.com/owner/repo/main/"},
+        {"readme_base_url": "https://evil.example/owner/repo/main/"},
+        {"readme_default_branch": "feature/../main"},
+        {"readme_default_branch": "feature\\main"},
+    ],
+)
+def test_repository_job_rejects_unsafe_readme_source_metadata(metadata):
+    repo_id = uuid.uuid4()
+    with pytest.raises(ValidationError):
+        RepositoryJob.model_validate(
+            {
+                "schema_version": 2,
+                "job_id": str(uuid.uuid4()),
+                "repo_id": str(repo_id),
+                "content_version": 1,
+                "repository": {
+                    "repo_id": str(repo_id),
+                    "full_name": "owner/repository",
+                    "content_hash": "unsafe-metadata-test",
+                    **metadata,
+                },
+            }
+        )
+
+
+def test_repository_job_requires_content_hash_for_retry_fencing():
+    repo_id = uuid.uuid4()
+    with pytest.raises(ValidationError, match="content_hash is required"):
+        RepositoryJob.model_validate(
+            {
+                "schema_version": 2,
+                "job_id": str(uuid.uuid4()),
+                "repo_id": str(repo_id),
+                "content_version": 1,
+                "repository": {
+                    "repo_id": str(repo_id),
                     "full_name": "owner/repository",
                 },
             }

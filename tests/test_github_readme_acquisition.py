@@ -1,0 +1,282 @@
+"""Canonical README acquisition and source-metadata regression tests."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from acquisition.github_graphql_client import (
+    FetchedReadme,
+    GitHubGraphQLClient,
+    GitHubGraphQLClientError,
+    build_readme_base_url,
+)
+from acquisition.graphql_queries import (
+    GET_README_QUERY,
+    README_CANDIDATES,
+    build_batch_metadata_query,
+)
+from acquisition.repository_enricher import RepositoryEnricher
+
+
+def _complete_readme_response(
+    *, branch: str | None = "main", errors: list[dict] | None = None, **aliases
+) -> dict:
+    repository = {
+        "defaultBranchRef": None if branch is None else {"name": branch},
+        **{alias: None for alias, _path in README_CANDIDATES},
+    }
+    repository.update(aliases)
+    response: dict = {"data": {"repository": repository}}
+    if errors is not None:
+        response["errors"] = errors
+    return response
+
+
+@pytest.mark.unit
+def test_get_readme_retains_selected_path_branch_and_media_base_url():
+    markdown = "# Project\n\n![Architecture](docs/architecture.png)"
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value=_complete_readme_response(
+            branch="release/v2", readme2={"text": markdown}
+        )
+    )
+
+    readme = client.get_readme("weave-org", "weave")
+
+    assert isinstance(readme, str)
+    assert readme == markdown
+    assert readme.raw_markdown == markdown
+    assert readme.source_path == "readme.md"
+    assert readme.default_branch == "release/v2"
+    assert readme.base_url == (
+        "https://raw.githubusercontent.com/weave-org/weave/"
+        "refs/heads/release/v2/"
+    )
+
+
+@pytest.mark.unit
+def test_readme_queries_request_default_branch_metadata():
+    assert "defaultBranchRef { name }" in GET_README_QUERY
+    assert "defaultBranchRef {" in build_batch_metadata_query([("owner", "repo")])
+    assert "name" in build_batch_metadata_query([("owner", "repo")])
+    assert 'HEAD:.github/README.md' in GET_README_QUERY
+    assert 'HEAD:docs/README.md' in GET_README_QUERY
+
+
+@pytest.mark.unit
+def test_get_readme_uses_github_precedence_before_root_and_docs():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value=_complete_readme_response(
+            readmeGithub1={"text": "# Community README"},
+            readme1={"text": "# Root README"},
+            readmeDocs1={"text": "# Docs README"},
+        )
+    )
+
+    readme = client.get_readme("owner", "repo")
+
+    assert readme.raw_markdown == "# Community README"
+    assert readme.source_path == ".github/README.md"
+    assert readme.base_url.endswith("/refs/heads/main/.github/")
+
+
+@pytest.mark.unit
+def test_get_readme_uses_docs_after_root_candidates_are_missing():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value=_complete_readme_response(
+            readmeDocs1={"text": "# Docs README"}
+        )
+    )
+
+    readme = client.get_readme("owner", "repo")
+
+    assert readme.raw_markdown == "# Docs README"
+    assert readme.source_path == "docs/README.md"
+    assert readme.base_url.endswith("/refs/heads/main/docs/")
+
+
+@pytest.mark.unit
+def test_get_readme_rejects_partial_graphql_errors_even_with_complete_data():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value=_complete_readme_response(
+            readme1={"text": "# README"},
+            errors=[{"message": "README object resolution timed out"}],
+        )
+    )
+
+    with pytest.raises(GitHubGraphQLClientError, match="GraphQL errors"):
+        client.get_readme("owner", "repo")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        {},
+        {"data": {}},
+        {"data": {"repository": None}},
+    ],
+)
+def test_get_readme_rejects_unresolved_or_missing_repository(response):
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(return_value=response)
+
+    with pytest.raises(GitHubGraphQLClientError):
+        client.get_readme("owner", "repo")
+
+
+@pytest.mark.unit
+def test_get_readme_rejects_an_incomplete_alias_set():
+    response = _complete_readme_response()
+    del response["data"]["repository"][README_CANDIDATES[-1][0]]
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(return_value=response)
+
+    with pytest.raises(GitHubGraphQLClientError, match="missing aliases"):
+        client.get_readme("owner", "repo")
+
+
+@pytest.mark.unit
+def test_get_readme_rejects_an_incomplete_alias_object():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value=_complete_readme_response(readme1={})
+    )
+
+    with pytest.raises(GitHubGraphQLClientError, match="incomplete readme1"):
+        client.get_readme("owner", "repo")
+
+
+@pytest.mark.unit
+def test_get_readme_returns_empty_only_after_every_alias_resolves_null():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(return_value=_complete_readme_response())
+
+    readme = client.get_readme("owner", "repo")
+
+    assert readme == ""
+    assert readme.source_path is None
+
+
+@pytest.mark.unit
+def test_batch_metadata_rejects_partial_graphql_errors_before_enrichment():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value={
+            "data": {"repo_0": {"nameWithOwner": "owner/repo"}},
+            "errors": [{"message": "languages field timed out"}],
+        }
+    )
+
+    with pytest.raises(GitHubGraphQLClientError, match="metadata.*GraphQL errors"):
+        client.get_repositories_batch([("owner", "repo")])
+
+
+@pytest.mark.unit
+def test_graphql_transport_never_returns_partial_error_data_to_callers():
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {}
+    response.json.return_value = {
+        "data": {"repo_0": {"nameWithOwner": "owner/repo"}},
+        "errors": [{"message": "description field timed out"}],
+    }
+    session = MagicMock()
+    session.post.return_value = response
+    client = GitHubGraphQLClient(
+        token="test-token", session=session, max_retries=0
+    )
+
+    with pytest.raises(GitHubGraphQLClientError, match="returned errors"):
+        client.execute("query { repository { name } }")
+
+
+@pytest.mark.unit
+def test_transient_readme_failure_propagates_for_acquisition_retry():
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(side_effect=TimeoutError("temporary GitHub timeout"))
+
+    with pytest.raises(TimeoutError, match="temporary GitHub timeout"):
+        client.get_readme("weave-org", "weave")
+
+
+@pytest.mark.unit
+def test_batch_enrichment_surfaces_readme_failure_as_a_retry_warning():
+    graphql_client = MagicMock()
+    graphql_client.get_repositories_batch.return_value = {
+        "owner/repo": {
+            "id": "R_test",
+            "databaseId": 123,
+            "nameWithOwner": "owner/repo",
+            "name": "repo",
+            "description": "demo",
+            "url": "https://github.com/owner/repo",
+            "owner": {"login": "owner", "databaseId": 456},
+            "defaultBranchRef": {"name": "main"},
+            "repositoryTopics": {"nodes": []},
+            "languages": {"edges": []},
+            "stargazers": {"edges": []},
+        }
+    }
+    graphql_client.get_readme.side_effect = TimeoutError("temporary README timeout")
+
+    results = RepositoryEnricher(
+        graphql_client=graphql_client
+    ).get_repositories_batch([{"full_name": "owner/repo"}])
+
+    assert len(results) == 1
+    assert results[0].readme.raw_markdown == ""
+    assert results[0].warnings
+    assert "temporary README timeout" in results[0].warnings[0]
+
+
+@pytest.mark.unit
+def test_readme_base_url_uses_readme_directory_and_https_only():
+    assert build_readme_base_url(
+        "owner", "repo", "main", "docs/README.md"
+    ) == (
+        "https://raw.githubusercontent.com/owner/repo/refs/heads/main/docs/"
+    )
+
+
+@pytest.mark.unit
+def test_inline_readme_is_preserved_without_model_rewrite():
+    raw_markdown = (
+        "# Project\n\n![Preview](assets/preview.png)\n\n"
+        "A sufficiently detailed project overview for developers and teams."
+    )
+    data = {
+        "id": "R_test",
+        "databaseId": 123,
+        "nameWithOwner": "owner/repo",
+        "name": "repo",
+        "description": "demo",
+        "url": "https://github.com/owner/repo",
+        "owner": {"login": "owner", "databaseId": 456},
+        "defaultBranchRef": {"name": "main", "target": {"history": {"nodes": []}}},
+        "readme1": {"text": raw_markdown},
+        "repositoryTopics": {"nodes": []},
+        "languages": {"edges": []},
+        "stargazers": {"edges": []},
+    }
+
+    result = RepositoryEnricher(graphql_client=MagicMock())._process_graphql_data(
+        data, None, None
+    )
+
+    assert result is not None
+    assert result.readme.raw_markdown == raw_markdown
+    assert result.readme.clean_text != raw_markdown
+    assert result.readme.readme_md == ""
+    assert result.readme.source_path == "README.md"
+    assert result.readme.default_branch == "main"
+    assert result.readme.base_url == (
+        "https://raw.githubusercontent.com/owner/repo/refs/heads/main/"
+    )

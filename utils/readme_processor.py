@@ -31,6 +31,9 @@ class ReadmeDocument:
     extracted_paragraphs: list[str]
     readme_length: int
     readme_md: str = ""
+    source_path: str | None = None
+    default_branch: str | None = None
+    base_url: str | None = None
 
 
 def decode_readme_payload(payload: dict[str, Any] | None) -> str:
@@ -53,10 +56,41 @@ def process_readme_payload(payload: dict[str, Any] | None) -> ReadmeDocument:
     return process_markdown(decode_readme_payload(payload))
 
 
-def process_markdown(markdown: str) -> ReadmeDocument:
+def process_markdown(
+    markdown: str,
+    *,
+    source_path: str | None = None,
+    default_branch: str | None = None,
+    base_url: str | None = None,
+) -> ReadmeDocument:
     """Clean markdown and extract paragraphs useful to Osiris semantic stages."""
     raw = markdown or ""
-    text = html.unescape(raw)
+    text = clean_markdown_copy(raw)
+
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n+", text):
+        block = re.sub(r"\s+", " ", block).strip(" -*_\t\n")
+        if not _is_meaningful_paragraph(block):
+            continue
+        paragraphs.append(block)
+
+    clean_text = "\n\n".join(paragraphs)
+    return ReadmeDocument(
+        raw_markdown=raw,
+        clean_text=clean_text,
+        extracted_paragraphs=paragraphs[:80],
+        readme_length=len(raw),
+        readme_md="",
+        source_path=source_path,
+        default_branch=default_branch,
+        base_url=base_url,
+    )
+
+
+def clean_markdown_copy(markdown: str) -> str:
+    """Return derived plain text while leaving canonical Markdown untouched."""
+
+    text = html.unescape(markdown or "")
     text = _BADGE_RE.sub(" ", text)
     text = _IMAGE_RE.sub(" ", text)
     text = _FENCE_RE.sub(" ", text)
@@ -73,18 +107,9 @@ def process_markdown(markdown: str) -> ReadmeDocument:
     paragraphs: list[str] = []
     for block in re.split(r"\n\s*\n+", text):
         block = re.sub(r"\s+", " ", block).strip(" -*_\t\n")
-        if not _is_meaningful_paragraph(block):
-            continue
-        paragraphs.append(block)
-
-    clean_text = "\n\n".join(paragraphs)
-    return ReadmeDocument(
-        raw_markdown=raw,
-        clean_text=clean_text,
-        extracted_paragraphs=paragraphs[:80],
-        readme_length=len(raw),
-        readme_md="",
-    )
+        if block:
+            paragraphs.append(block)
+    return "\n\n".join(paragraphs)
 
 
 def _is_meaningful_paragraph(text: str) -> bool:

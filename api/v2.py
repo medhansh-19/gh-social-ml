@@ -66,6 +66,8 @@ from inference.runtime import (
     validate_recommendation_runtime,
 )
 from retrieval.v2_retriever import QdrantV2Retriever, RetrievalDependencyError
+from summarization.contracts import CardSummaryArtifact, card_summary_from_payload
+from utils.readme_processor import clean_markdown_copy, process_markdown
 
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 logger = logging.getLogger("pipeline.api.v2")
@@ -453,16 +455,75 @@ def _embed_repository_job_locked(request: RepositoryJob, lock: Any) -> dict[str,
         requested_version=request.content_version,
         job_id=job_id,
     )
+    pipeline = repository_embedding_pipeline()
     if job_status != "apply":
-        return {
-            "accepted": True,
-            "status": job_status,
-            "repo_id": repo_id,
-            "content_version": current,
-        }
+        if expected_point is None:
+            raise V2ServiceHTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Repository summary state changed; retry the request.",
+                error_code="REPOSITORY_SUMMARY_RACE",
+                retryable=True,
+            )
+        stored_payload = dict(expected_point.payload or {})
+        requested_hash = request.repository.content_hash
+        stored_hash = stored_payload.get("content_hash")
+        if (
+            not requested_hash
+            or not isinstance(stored_hash, str)
+            or not stored_hash
+            or requested_hash != stored_hash
+        ):
+            raise V2ServiceHTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="content_version already identifies different repository content.",
+                error_code="REPOSITORY_CONTENT_HASH_CONFLICT",
+                retryable=False,
+            )
+        artifact = card_summary_from_payload(stored_payload)
+        if artifact is None or not pipeline.card_summarizer.is_current(artifact):
+            payload = _repository_embedding_payload(request)
+            artifact = pipeline.summarize_repository(payload)
+            lock.assert_owned()
+            stored = repository_store().compare_and_set_card_summary(
+                expected_point=expected_point,
+                artifact=artifact,
+            )
+            lock.assert_owned()
+            if stored is None:
+                raise V2ServiceHTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Repository summary state changed; retry the request.",
+                    error_code="REPOSITORY_SUMMARY_RACE",
+                    retryable=True,
+                )
+            final_status, current = _repository_job_status(
+                [stored],
+                version_field="content_version",
+                job_field="content_job_id",
+                requested_version=request.content_version,
+                job_id=job_id,
+            )
+            stored_payload = dict(stored.payload or {})
+            artifact = card_summary_from_payload(stored_payload)
+            job_status = final_status
+        if artifact is None or not pipeline.card_summarizer.is_current(artifact):
+            raise V2ServiceHTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Repository summary state changed; retry the request.",
+                error_code="REPOSITORY_SUMMARY_RACE",
+                retryable=True,
+            )
+        return _repository_embedding_response(
+            request=request,
+            status_name=job_status,
+            content_version=current,
+            embedding_version=str(
+                stored_payload.get("embedding_version") or pipeline.config.version
+            ),
+            artifact=artifact,
+        )
 
     payload = _repository_embedding_payload(request)
-    pipeline = repository_embedding_pipeline()
     result = pipeline.embed_repository(payload)
     result.payload["content_job_id"] = job_id
 
@@ -491,12 +552,43 @@ def _embed_repository_job_locked(request: RepositoryJob, lock: Any) -> dict[str,
         requested_version=request.content_version,
         job_id=job_id,
     )
+    stored_artifact = card_summary_from_payload(dict(stored.payload or {})) if stored else None
+    if stored_artifact is None:
+        raise V2ServiceHTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Repository summary was not durably stored; retry the request.",
+            error_code="REPOSITORY_SUMMARY_MISSING",
+            retryable=True,
+        )
+    return _repository_embedding_response(
+        request=request,
+        status_name=final_status,
+        content_version=final_version,
+        embedding_version=str(
+            dict(stored.payload or {}).get("embedding_version")
+            or result.embedding_version
+        ),
+        artifact=stored_artifact,
+    )
+
+
+def _repository_embedding_response(
+    *,
+    request: RepositoryJob,
+    status_name: str,
+    content_version: int,
+    embedding_version: str,
+    artifact: CardSummaryArtifact,
+) -> dict[str, Any]:
     return {
+        "schema_version": 2,
         "accepted": True,
-        "status": final_status,
-        "repo_id": repo_id,
-        "content_version": final_version,
-        "embedding_version": result.embedding_version,
+        "status": status_name,
+        "job_id": str(request.job_id),
+        "repo_id": str(request.repo_id),
+        "content_version": content_version,
+        "embedding_version": embedding_version,
+        "card_summary": artifact.model_dump(mode="json"),
     }
 
 
@@ -506,9 +598,15 @@ def _repository_embedding_payload(request: RepositoryJob) -> dict[str, Any]:
     # payload contract publishes deterministic, non-null serving values.
     payload["description"] = payload.get("description") or ""
     payload["primary_language"] = payload.get("primary_language") or "Unknown"
-    readme = payload.pop("readme", None)
+    readme = payload.get("readme")
     if readme is not None:
-        payload["extracted_paragraphs"] = [readme]
+        derived = process_markdown(readme)
+        payload["extracted_paragraphs"] = derived.extracted_paragraphs or [
+            clean_markdown_copy(readme)
+        ]
+        payload["extracted_paragraphs"] = [
+            paragraph for paragraph in payload["extracted_paragraphs"] if paragraph
+        ]
         payload["readme_length"] = len(readme)
     payload.update({
         "id": str(request.repo_id),

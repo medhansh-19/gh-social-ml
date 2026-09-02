@@ -20,6 +20,7 @@ from config import EMBEDDING_MODEL_REVISION, REPOSITORY_EMBEDDING_MODEL
 from embedding.embedding_pipeline import RepositoryEmbeddingPipeline
 from embedding.embeddings import SentenceTransformerEmbedder
 from scripts.user_onboarding import UserOnboardingPipeline
+from summarization.runtime import card_summary_pipeline, shutdown_card_summary_runtime
 
 
 T = TypeVar("T")
@@ -150,7 +151,8 @@ def repository_embedding_pipeline() -> RepositoryEmbeddingPipeline:
         embedder=SentenceTransformerEmbedder(
             REPOSITORY_EMBEDDING_MODEL,
             model=model,
-        )
+        ),
+        card_summarizer=card_summary_pipeline(),
     )
 
 
@@ -229,6 +231,7 @@ def shutdown_embedding_runtime() -> None:
     repository_embedding_pipeline.cache_clear()
     user_onboarding_pipeline.cache_clear()
     shared_embedding_model.cache_clear()
+    shutdown_card_summary_runtime()
 
 
 def reset_embedding_runtime_for_tests() -> None:

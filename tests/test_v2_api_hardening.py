@@ -290,6 +290,35 @@ def test_declared_oversized_request_is_rejected_before_parsing(monkeypatch) -> N
     assert response.json()["code"] == "REQUEST_TOO_LARGE"
 
 
+def test_larger_body_allowance_is_scoped_to_repository_embed(monkeypatch) -> None:
+    monkeypatch.setenv("INTERNAL_API_SECRET", "test-internal-secret")
+    client = TestClient(api_main.app)
+    allowed_for_repository = client.post(
+        "/api/v2/repositories/embed",
+        headers={
+            "x-internal-secret": "test-internal-secret",
+            "content-length": str(api_main.MAX_REQUEST_BODY_BYTES + 1),
+            "content-type": "application/json",
+        },
+        content=b"{}",
+    )
+    too_large_for_repository = client.post(
+        "/api/v2/repositories/embed",
+        headers={
+            "x-internal-secret": "test-internal-secret",
+            "content-length": str(
+                api_main.REPOSITORY_EMBED_MAX_REQUEST_BODY_BYTES + 1
+            ),
+            "content-type": "application/json",
+        },
+        content=b"{}",
+    )
+
+    assert allowed_for_repository.status_code == 422
+    assert too_large_for_repository.status_code == 413
+    assert too_large_for_repository.json()["code"] == "REQUEST_TOO_LARGE"
+
+
 def test_feedback_conflict_reports_safe_partial_batch_progress(monkeypatch) -> None:
     monkeypatch.setenv("INTERNAL_API_SECRET", "test-internal-secret")
     failed_event_id = str(uuid.uuid4())

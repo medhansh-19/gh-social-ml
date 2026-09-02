@@ -6,6 +6,9 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
+from summarization.contracts import CardSummaryArtifact
+from summarization.pipeline import CardSummaryPipeline
+
 from .embeddings import SentenceTransformerEmbedder, aggregate_vectors, chunk_text
 from .qdrant_store import QdrantRepositoryStore
 from .repository_embedding import (
@@ -33,10 +36,22 @@ class RepositoryEmbeddingPipeline:
         config: RepositoryEmbeddingConfig | None = None,
         embedder: SentenceTransformerEmbedder | None = None,
         store: QdrantRepositoryStore | None = None,
+        card_summarizer: CardSummaryPipeline | None = None,
     ) -> None:
         self.config = config or RepositoryEmbeddingConfig()
         self.embedder = embedder or SentenceTransformerEmbedder(self.config.model_name)
         self.store = store
+        self.card_summarizer = card_summarizer or CardSummaryPipeline()
+
+    def summarize_repository(
+        self,
+        source: Any,
+        repo: dict[str, Any] | None = None,
+    ) -> CardSummaryArtifact:
+        """Generate a versioned card artifact from bounded derived source text."""
+
+        payload = dict(repo) if repo is not None else coerce_payload(source)
+        return self.card_summarizer.summarize(source, payload)
 
     def embed_repository(self, source: Any) -> RepositoryEmbeddingResult:
         """Embed one approved repository payload or EnrichmentResult."""
@@ -49,6 +64,7 @@ class RepositoryEmbeddingPipeline:
         readme_text = build_readme_text(source)
         metadata_text = build_metadata_text(repo)
         topic_text = build_topic_text(repo)
+        card_summary = self.summarize_repository(source, repo)
 
         readme_chunks = chunk_text(
             readme_text,
@@ -87,6 +103,7 @@ class RepositoryEmbeddingPipeline:
             readme_chunks=len(readme_chunks),
             source_hash=source_hash,
             config=self.config,
+            card_summary=card_summary,
         )
         logger.info("Embedded repository %s with %d README chunks", repo_id, len(readme_chunks))
         return RepositoryEmbeddingResult(
@@ -100,6 +117,7 @@ class RepositoryEmbeddingPipeline:
             source_hash=source_hash,
             embedding_model=self.config.model_name,
             embedding_version=self.config.version,
+            card_summary=card_summary,
         )
 
     def embed_batch(self, sources: Iterable[Any]) -> list[RepositoryEmbeddingResult]:

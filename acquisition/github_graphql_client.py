@@ -135,11 +135,25 @@ class GitHubGraphQLClient:
             response = self.execute(GET_README_QUERY, {"owner": owner, "name": name})
             if not isinstance(response, dict):
                 raise GitHubClientError("README query returned no response envelope")
-            if response.get("errors"):
-                raise GitHubClientError(
-                    f"README query returned GraphQL errors: {response['errors']}"
-                )
+            gql_errors = response.get("errors")
             data = response.get("data")
+            # GitHub can return a partial response: usable repository data (and
+            # valid README aliases) alongside a field-level error for a *different*
+            # alias.  Only treat errors as fatal when there is no accompanying
+            # data envelope — otherwise log them as warnings and continue so the
+            # pipeline can still use whichever README aliases resolved correctly.
+            if gql_errors:
+                if not isinstance(data, dict) or "repository" not in data:
+                    raise GitHubClientError(
+                        f"README query returned GraphQL errors: {gql_errors}"
+                    )
+                logger.warning(
+                    "README query for %s/%s returned field-level errors alongside "
+                    "partial data — proceeding with available aliases. Errors: %s",
+                    owner,
+                    name,
+                    gql_errors,
+                )
             if not isinstance(data, dict) or "repository" not in data:
                 raise GitHubClientError("README query response is missing repository data")
             repo = data["repository"]

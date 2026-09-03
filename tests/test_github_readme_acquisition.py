@@ -101,13 +101,43 @@ def test_get_readme_uses_docs_after_root_candidates_are_missing():
 
 
 @pytest.mark.unit
-def test_get_readme_rejects_partial_graphql_errors_even_with_complete_data():
+def test_get_readme_tolerates_partial_graphql_errors_when_valid_data_present(caplog):
+    """GitHub can return field-level errors alongside a valid README alias.
+
+    In that case the pipeline must NOT abort — it should log a warning and
+    return the README that successfully resolved.  Aborting here prevents the
+    entire trending snapshot from being published (the P1 reported by greptile).
+    """
+    import logging
+
     client = GitHubGraphQLClient(token="test-token")
     client.execute = MagicMock(
         return_value=_complete_readme_response(
             readme1={"text": "# README"},
             errors=[{"message": "README object resolution timed out"}],
         )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="acquisition.github_graphql_client"):
+        readme = client.get_readme("owner", "repo")
+
+    assert readme.raw_markdown == "# README", (
+        "A valid README alias should be returned even when field-level errors are present"
+    )
+    assert any("field-level errors" in record.message for record in caplog.records), (
+        "A warning should be emitted when partial errors accompany valid data"
+    )
+
+
+@pytest.mark.unit
+def test_get_readme_rejects_graphql_errors_when_no_usable_data():
+    """When errors arrive with NO usable repository data at all, the call must raise."""
+    client = GitHubGraphQLClient(token="test-token")
+    client.execute = MagicMock(
+        return_value={
+            "errors": [{"message": "Resource not accessible by integration"}],
+            "data": None,
+        }
     )
 
     with pytest.raises(GitHubGraphQLClientError, match="GraphQL errors"):

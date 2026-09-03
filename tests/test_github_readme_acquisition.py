@@ -196,7 +196,9 @@ def test_get_readme_returns_empty_only_after_every_alias_resolves_null():
 
 
 @pytest.mark.unit
-def test_batch_metadata_rejects_partial_graphql_errors_before_enrichment():
+def test_batch_metadata_preserves_usable_partial_response_envelopes(caplog):
+    import logging
+
     client = GitHubGraphQLClient(token="test-token")
     client.execute = MagicMock(
         return_value={
@@ -205,17 +207,21 @@ def test_batch_metadata_rejects_partial_graphql_errors_before_enrichment():
         }
     )
 
-    with pytest.raises(GitHubGraphQLClientError, match="metadata.*GraphQL errors"):
-        client.get_repositories_batch([("owner", "repo")])
+    with caplog.at_level(logging.WARNING, logger="acquisition.github_graphql_client"):
+        results = client.get_repositories_batch([("owner", "repo")])
+
+    assert results.get("owner/repo") == {"nameWithOwner": "owner/repo"}
 
 
 @pytest.mark.unit
-def test_graphql_transport_never_returns_partial_error_data_to_callers():
+def test_graphql_transport_preserves_partial_error_data_envelope(caplog):
+    import logging
+
     response = MagicMock()
     response.status_code = 200
     response.headers = {}
     response.json.return_value = {
-        "data": {"repo_0": {"nameWithOwner": "owner/repo"}},
+        "data": {"repository": {"name": "repo"}},
         "errors": [{"message": "description field timed out"}],
     }
     session = MagicMock()
@@ -224,8 +230,14 @@ def test_graphql_transport_never_returns_partial_error_data_to_callers():
         token="test-token", session=session, max_retries=0
     )
 
-    with pytest.raises(GitHubGraphQLClientError, match="returned errors"):
-        client.execute("query { repository { name } }")
+    with caplog.at_level(logging.WARNING, logger="acquisition.github_graphql_client"):
+        result = client.execute("query { repository { name } }")
+
+    assert result == {
+        "data": {"repository": {"name": "repo"}},
+        "errors": [{"message": "description field timed out"}],
+    }
+    assert any("partial errors" in record.message for record in caplog.records)
 
 
 @pytest.mark.unit

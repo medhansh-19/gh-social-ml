@@ -217,7 +217,7 @@ class GitHubGraphQLClient:
         response = self.execute(query)
         if not response:
             return {}
-        if response.get("errors"):
+        if response.get("errors") and not response.get("data"):
             raise GitHubClientError(
                 f"batch metadata query returned GraphQL errors: {response['errors']}"
             )
@@ -275,7 +275,13 @@ class GitHubGraphQLClient:
                 logger.debug("GraphQL rate limit: %s remaining", rl.get("remaining"))
             
             if "errors" in result:
-                if not result.get("data") and any(
+                if result.get("data"):
+                    logger.warning(
+                        "GitHub GraphQL returned partial errors: %s",
+                        result["errors"],
+                    )
+                    return result
+                if any(
                     "Could not resolve to a Repository" in error.get("message", "")
                     for error in result["errors"]
                 ):

@@ -359,3 +359,80 @@ def test_repository_job_lock_uses_token_checked_release():
     redis.set.assert_called_once()
     assert redis.set.call_args.kwargs == {"nx": True, "px": 600_000}
     redis.eval.assert_called_once()
+
+
+def test_refresh_repository_job_backfills_missing_summary_fields_for_older_schema_v2_records():
+    from api.v2 import _refresh_repository_job_locked
+    from api.contracts import RepositoryRefreshJob, RepositoryFeaturePatch
+
+    repo_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    lock = SimpleNamespace(assert_owned=lambda: None)
+
+    # Create an older schema-v2 payload mock missing card_summary fields
+    older_payload = {
+        "repo_id": repo_id,
+        "full_name": "owner/repo",
+        "description": "test repo",
+        "primary_language": "Python",
+        "languages": ["Python"],
+        "topics": [],
+        "star_count": 10,
+        "fork_count": 2,
+        "open_issues_count": 0,
+        "readme_length": 500,
+        "readme_chunks": 1,
+        "pushed_days_ago": 5,
+        "delta_3d": 0,
+        "delta_7d": 0,
+        "delta_30d": 0,
+        "mentionable_users_count": 1,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z",
+        "pushed_at": "2026-01-03T00:00:00Z",
+        "discovery_category": None,
+        "discovery_band": None,
+        "category": "ML",
+        "tags": [],
+        "doc_quality": 0.5,
+        "code_health": 0.8,
+        "activity_score": 0.6,
+        "trend_velocity": 0.1,
+        "embedding_dim": 384,
+        "embedding_model": "all-MiniLM-L6-v2",
+        "embedding_model_revision": "main",
+        "embedding_version": "v2",
+        "feature_spec_version": "v2",
+        "content_version": 1,
+        "content_hash": "hash123",
+        "model_version": "all-MiniLM-L6-v2",
+        "indexed_at": "2026-01-04T00:00:00Z",
+        "source_hash": "src123",
+        "feature_version": 1,
+        "feature_job_id": str(uuid.uuid4()),
+        "serving_eligibility_version": "repository-vector-v2",
+        # Notice: NO card_summary or card_summary_* fields!
+    }
+
+    mock_point = SimpleNamespace(id=repo_id, payload=older_payload)
+    mock_store = MagicMock()
+    mock_store.compare_and_set_features.return_value = SimpleNamespace(
+        id=repo_id, payload={**older_payload, "feature_version": 2, "feature_job_id": job_id}
+    )
+
+    job = RepositoryRefreshJob(
+        schema_version=2,
+        repo_id=repo_id,
+        job_id=job_id,
+        feature_version=2,
+        features=RepositoryFeaturePatch(star_count=15),
+    )
+
+    with patch("api.v2._repository_points", return_value=[mock_point]), \
+         patch("api.v2.repository_store", return_value=mock_store):
+        res = _refresh_repository_job_locked(job, lock)
+
+    assert res["accepted"] is True
+    assert res["status"] == "applied"
+    assert res["feature_version"] == 2
+

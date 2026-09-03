@@ -41,6 +41,7 @@ from embedding.runtime import (
 )
 from embedding.user_profile_store import QdrantUserProfileStore
 from embedding.vector_contract import (
+    repository_payload_defaults,
     repository_point_id,
     validate_repository_payload,
 )
@@ -657,7 +658,11 @@ def _refresh_repository_job_locked(
         }
 
     features = request.features.model_dump(mode="json", exclude_none=True)
+    # Merge vector payload contract defaults underneath the existing payload so
+    # older schema-v2 points (indexed before card_summary fields existed) pass
+    # validation seamlessly during feature-only refreshes.
     updated = {
+        **repository_payload_defaults(),
         **dict(expected_point.payload or {}),
         **features,
         "feature_version": request.feature_version,

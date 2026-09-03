@@ -48,7 +48,7 @@ class SummarySettings:
     input_max_chars: int = 12_000
     temperature: float = 0.1
     max_output_tokens: int = 240
-    request_timeout_seconds: float = 30.0
+    request_timeout_seconds: float = 5.0
     rpm_limit: float = 60.0
     max_retries: int = 2
     retry_base_seconds: float = 1.0
@@ -132,7 +132,7 @@ class SummarySettings:
             ),
             request_timeout_seconds=_number(
                 "SUMMARY_REQUEST_TIMEOUT_SECONDS",
-                30.0,
+                5.0,
                 minimum=0.1,
                 maximum=30,
             ),
